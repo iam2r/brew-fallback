@@ -22,19 +22,34 @@ __brew_fallback_pkgmap() {
   bare="${name%%@*}"
   ver="${name#*@}"
 
-  # 规则 1: 精确匹配大写差异（MacPorts 区分大小写）
+  # 规则 1: 精确匹配特例
   case "$name" in
-    ag)              echo "the_silver_searcher"; return ;;
-    silver-searcher) echo "the_silver_searcher"; return ;;
+    ag)                echo "the_silver_searcher"; return ;;
+    silver-searcher)   echo "the_silver_searcher"; return ;;
     ImageMagick|imagemagick) echo "ImageMagick"; return ;;
-    icu4c)           echo "icu"; return ;;
-    pkg-config)      echo "pkgconfig"; return ;;
-    sqlite)          echo "sqlite3"; return ;;
-    mysql)           echo "mariadb"; return ;;
-    make|gmake)      echo "gmake"; return ;;
-    gnu-which)       echo "gwhich"; return ;;
-    gnu-indent)      echo "gindent"; return ;;
-    gnu-time)        echo "gtime"; return ;;
+    icu4c)             echo "icu"; return ;;
+    pkg-config)        echo "pkgconfig"; return ;;
+    sqlite)            echo "sqlite3"; return ;;
+    mysql)             echo "mariadb"; return ;;
+    make|gmake)        echo "gmake"; return ;;
+    # GNU 工具
+    gnu-which)         echo "gwhich"; return ;;
+    gnu-indent)        echo "gindent"; return ;;
+    gnu-time)          echo "gtime"; return ;;
+    gnu-tar)           echo "gnutar"; return ;;
+    # 语言/框架
+    luarocks)          echo "lua-luarocks"; return ;;
+    haskell-stack)     echo "stack"; return ;;
+    dart)              echo "dart-sdk"; return ;;
+    gnupg)             echo "gnupg2"; return ;;
+    npm)               echo "npm10"; return ;;
+    kubectl)           echo "kubectl-1.32"; return ;;
+    maven)             echo "maven3"; return ;;
+    ruby)              echo "ruby33"; return ;;
+    perl)              echo "perl5.38"; return ;;
+    pip)               echo "py-pip"; return ;;
+    git)               echo "git" ;;
+    # 无映射的 → 规则继续
   esac
 
   # 规则 2: gnu-XXX → gXXX
@@ -64,7 +79,11 @@ __brew_fallback_pkgmap() {
   fi
 
   # 规则 6: Xxx@YY → XxxYY（去掉点号，通用版本化名）
+  # 特例: perl@5.38 → perl5.38（保留点号）
   if [[ "$name" == *@* ]]; then
+    if [[ "$bare" == perl ]]; then
+      echo "perl${ver}"; return
+    fi
     echo "${bare}$(echo "$ver" | tr -d '.')"
     return
   fi
