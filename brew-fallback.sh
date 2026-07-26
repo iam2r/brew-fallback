@@ -110,7 +110,13 @@ __brew_fallback_install() {
     # Use sed with basic ERE (compatible with BSD/macOS sed) instead of
     # GNU-only grep -oP to parse version from MacPorts directory listing.
     # Matches: mp_name-1.2.3_0.darwin_XX.arch.tbz2
-    ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null \
+    ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null)
+    # Debug: if MOCK, print what MacPorts returned
+    if [[ -n "$BREW_FALLBACK_MOCK_NO_BOTTLE" ]]; then
+      echo "  [debug] MacPorts $mirror returned $(echo "$ver" | wc -l) lines" >&2
+      echo "  [debug] sample: $(echo "$ver" | head -3)" >&2
+    fi
+    ver=$(echo "$ver" \
       | tr ' ' '\n' \
       | sed -n "s/^${mp_name}-\([0-9.]*\)_0\.darwin_${dver}\.${arch}\.tbz2$/\1/p" \
       | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
