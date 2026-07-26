@@ -28,17 +28,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Debug — dump brew bottle files
-        run: |
-          brew info autoconf --json=v2 2>/dev/null > /tmp/brew.json || { echo "brew failed"; exit 0; }
-          python3 -c "
-import json
-d = json.load(open('/tmp/brew.json'))['formulae'][0]
-f = d.get('bottle',{}).get('files',{})
-print('KEYS:', list(f.keys()))
-import os
-print('ARCH:', os.uname().machine)
-print('DARWIN:', os.uname().release)
-" 2>&1 || echo "parse failed"
+        run: python3 debug_bottle.py
 
       - name: Install brew-fallback
         run: |
