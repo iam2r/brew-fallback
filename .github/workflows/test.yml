@@ -27,9 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Debug — dump brew bottle files
-        run: python3 debug_bottle.py
-
       - name: Install brew-fallback
         run: |
           mkdir -p ~/.local/share/brew-fallback
