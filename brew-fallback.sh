@@ -15,73 +15,62 @@ __brew_fallback_darwin_ver() {
 }
 
 # === brew 包名 → MacPorts 包名映射表 ===
-# 同名的大多数不需要写，这里只列出不同的。
-# 格式: "brew 包名" "MacPorts 包名"
-# 修改此表不需要动核心代码。
+# 同名的大多数不需要写，这里只列出不匹配规则的特例。
+# 规则从上到下依次尝试，匹配即停。
 __brew_fallback_pkgmap() {
-  local name="$1"
+  local name="$1" bare ver
+  bare="${name%%@*}"
+  ver="${name#*@}"
+
+  # 规则 1: 精确匹配大写差异（MacPorts 区分大小写）
   case "$name" in
-    # GNU 工具：gnu-XXX → gXXX
-    gnu-sed)     echo "gsed" ;;
-    gnu-tar)     echo "gtar" ;;
-    gnu-which)   echo "gwhich" ;;
-    gnu-indent)  echo "gindent" ;;
-    gnu-time)    echo "gtime" ;;
-    # 语言运行时：Xxx@YY → XxxYY
-    python@3.8)  echo "python38" ;;
-    python@3.9)  echo "python39" ;;
-    python@3.10) echo "python310" ;;
-    python@3.11) echo "python311" ;;
-    python@3.12) echo "python312" ;;
-    python@3.13) echo "python313" ;;
-    python)      echo "python312" ;;
-    ruby@3.3)    echo "ruby33" ;;
-    ruby@3.2)    echo "ruby32" ;;
-    perl@5.38)   echo "perl5.38" ;;
-    perl@5.36)   echo "perl5.36" ;;
-    lua@5.4)     echo "lua54" ;;
-    lua@5.3)     echo "lua53" ;;
-    node)        echo "nodejs22" ;;
-    node@22)     echo "nodejs22" ;;
-    node@20)     echo "nodejs20" ;;
-    node@18)     echo "nodejs18" ;;
-    # 编译器
-    gcc)         echo "gcc14" ;;
-    gcc@14)      echo "gcc14" ;;
-    gcc@13)      echo "gcc13" ;;
-    llvm)        echo "llvm-18" ;;
-    llvm@18)     echo "llvm-18" ;;
-    llvm@17)     echo "llvm-17" ;;
-    make)        echo "gmake" ;;
-    # 数据库
-    mysql)       echo "mariadb" ;;
-    postgresql@16) echo "postgresql16" ;;
-    postgresql@15) echo "postgresql15" ;;
-    sqlite)      echo "sqlite3" ;;
-    # 构建
-    pkg-config)  echo "pkgconfig" ;;
-    # 文本工具
-    ag)          echo "the_silver_searcher" ;;
-    silver-searcher) echo "the_silver_searcher" ;;
-    # 系统
-    icu4c)       echo "icu" ;;
-    ImageMagick) echo "ImageMagick" ;;
-    imagemagick) echo "ImageMagick" ;;
-    # 默认同名，再验证是否存在，不存在就用动态搜索 fallback
-    *)  local bare="${name%%@*}"
-        # 先验证原名
-        local code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-          "https://mirror.fcix.net/macports/packages/$bare/" 2>/dev/null)
-        if [[ "$code" = "200" ]]; then
-          echo "$bare"
-        else
-          # 动态搜索：node → nodejs22
-          [[ "$bare" == node ]] && { echo "nodejs22"; return; }
-          # 剩余交给 git log
-          echo ""
-        fi
-        ;;
+    ag)              echo "the_silver_searcher"; return ;;
+    silver-searcher) echo "the_silver_searcher"; return ;;
+    ImageMagick|imagemagick) echo "ImageMagick"; return ;;
+    icu4c)           echo "icu"; return ;;
+    pkg-config)      echo "pkgconfig"; return ;;
+    sqlite)          echo "sqlite3"; return ;;
+    mysql)           echo "mariadb"; return ;;
+    make|gmake)      echo "gmake"; return ;;
+    gnu-which)       echo "gwhich"; return ;;
+    gnu-indent)      echo "gindent"; return ;;
+    gnu-time)        echo "gtime"; return ;;
   esac
+
+  # 规则 2: gnu-XXX → gXXX
+  if [[ "$name" == gnu-* ]]; then echo "g${name#gnu-}"; return; fi
+
+  # 规则 3: gcc/gcc@14 → gcc14, llvm/llvm@18 → llvm-18, make → gmake
+  if [[ "$bare" == gcc ]]; then
+    [[ "$name" == gcc@* ]] && echo "gcc${ver#gcc@}" || echo "gcc14"
+    return
+  fi
+  if [[ "$bare" == llvm ]]; then
+    [[ "$name" == llvm@* ]] && echo "llvm-${ver#llvm@}" || echo "llvm-18"
+    return
+  fi
+  if [[ "$bare" == make ]]; then echo "gmake"; return; fi
+
+  # 规则 4: openssl@X → openssl（MacPorts 上叫 openssl，不带版本）
+  if [[ "$bare" == openssl ]]; then echo "openssl"; return; fi
+
+  # 规则 5: node@YY → nodejsYY, node → nodejs(当前大版本)
+  if [[ "$bare" == node ]]; then
+    local darwin_ver="${ver:-$(uname -r | cut -d. -f1)}"
+    if   (( darwin_ver >= 25 )); then echo "nodejs24"
+    elif (( darwin_ver >= 22 )); then echo "nodejs22"
+    else echo "nodejs20"; fi
+    return
+  fi
+
+  # 规则 6: Xxx@YY → XxxYY（去掉点号，通用版本化名）
+  if [[ "$name" == *@* ]]; then
+    echo "${bare}$(echo "$ver" | tr -d '.')"
+    return
+  fi
+
+  # 规则 7: 默认同名
+  echo "$bare"
 }
 
 # === 核心：从 MacPorts 镜像下载预编译包，安装到 brew Cellar ===
