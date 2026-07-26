@@ -107,9 +107,6 @@ __brew_fallback_install() {
   fi
 
   if [[ -z "$ver" ]]; then
-    # Use sed with basic ERE (compatible with BSD/macOS sed) instead of
-    # GNU-only grep -oP to parse version from MacPorts directory listing.
-    # Matches: mp_name-1.2.3_0.darwin_XX.arch.tbz2
     ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null)
     [[ -n "$ver" ]] || return 1
     # MacPorts 镜像返回 HTML 目录列表，提取 .tbz2 文件链接中的版本号
