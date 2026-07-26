@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-13
+          - macos-14
+          - macos-15
+        shell:
+          - zsh
+          - bash
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }} {0}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install brew-fallback
+        run: |
+          mkdir -p ~/.local/share/brew-fallback
+          cp brew-fallback.sh ~/.local/share/brew-fallback/brew-fallback.sh
+          echo "source \"$HOME/.local/share/brew-fallback/brew-fallback.sh\"" >> ~/.zshrc
+          echo "source \"$HOME/.local/share/brew-fallback/brew-fallback.sh\"" >> ~/.bash_profile
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          type brew
+          echo "OS: $(sw_vers -productVersion)  darwin: $(uname -r | cut -d. -f1)"
+
+      - name: Test — bottle exists (autoconf)
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          brew install autoconf
+          brew list | grep autoconf
+          autoconf --version | head -1
+
+      - name: Test — bottle fallback (fd)
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          # unbottle if already present
+          brew uninstall --ignore-dependencies fd 2>/dev/null || true
+          brew install fd 2>&1
+          fd --version
+          brew list | grep fd
+
+      - name: Test — brew list & info work
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          brew list | grep fd
+          brew info fd | head -3
+
+      - name: Test — brew uninstall removes from Cellar
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          brew uninstall fd
+          brew list | grep fd && { echo "FAIL: fd still in list"; exit 1; } || echo "OK: fd removed"
+          ls /usr/local/Cellar/fd 2>/dev/null && { echo "FAIL: Cellar still exists"; exit 1; } || echo "OK: Cellar cleaned"
+
+      - name: Test — no-fallback pkg (no MacPorts match) → source build
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          brew uninstall --ignore-dependencies fd 2>/dev/null || true
+          brew install hello 2>&1
+          hello --version | head -1
