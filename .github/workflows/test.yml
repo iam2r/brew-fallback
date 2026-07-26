@@ -29,16 +29,16 @@ jobs:
 
       - name: Debug — dump brew bottle files
         run: |
-          brew info autoconf --json=v2 2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)['formulae'][0]
+          brew info autoconf --json=v2 2>/dev/null > /tmp/brew.json || { echo "brew failed"; exit 0; }
+          python3 -c "
+import json
+d = json.load(open('/tmp/brew.json'))['formulae'][0]
 f = d.get('bottle',{}).get('files',{})
-print('=== bottle files keys ===')
-print(list(f.keys()))
+print('KEYS:', list(f.keys()))
 import os
-print('arch:', os.uname().machine)
-print('darwin:', __import__('platform').release())
-" 2>&1 || echo "could not dump"
+print('ARCH:', os.uname().machine)
+print('DARWIN:', os.uname().release)
+" 2>&1 || echo "parse failed"
 
       - name: Install brew-fallback
         run: |
