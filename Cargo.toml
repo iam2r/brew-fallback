@@ -1,0 +1,8 @@
+[package]
+name = "brew-fallback"
+version = "1.0.0"
+description = "Homebrew bottle fallback for older macOS versions"
+authors = ["iam2r <iam2r@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/iam2r/brew-fallback"
+categories = ["macOS", "package-manager", "system-tools"]

@@ -1,0 +1,11 @@
+{
+  "name": "brew-fallback",
+  "version": "1.0.0",
+  "description": "Homebrew bottle fallback for older macOS versions — automatically fetches missing bottles from MacPorts mirrors",
+  "keywords": ["brew", "homebrew", "macos", "bottle", "fallback", "macports"],
+  "homepage": "https://github.com/iam2r/brew-fallback",
+  "bugs": "https://github.com/iam2r/brew-fallback/issues",
+  "license": "(MIT OR Apache-2.0)",
+  "author": "iam2r <iam2r@users.noreply.github.com>",
+  "files": ["brew-fallback.sh", "install.sh", "README.md"]
+}
