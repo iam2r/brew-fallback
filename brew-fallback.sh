@@ -99,8 +99,12 @@ __brew_fallback_install() {
   local mirror="https://mirror.fcix.net/macports/packages/$mp_name/"
 
   if [[ -z "$ver" ]]; then
+    # Use sed with basic ERE (compatible with BSD/macOS sed) instead of
+    # GNU-only grep -oP to parse version from MacPorts directory listing.
+    # Matches: mp_name-1.2.3_0.darwin_XX.arch.tbz2
     ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null \
-      | grep -oP "$mp_name-\K[0-9.]+(?=_0\.darwin_${dver}\.${arch}\.tbz2)" \
+      | tr ' ' '\n' \
+      | sed -n "s/^${mp_name}-\([0-9.]*\)_0\.darwin_${dver}\.${arch}\.tbz2$/\1/p" \
       | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
     [[ -z "$ver" ]] && return 1
   fi
@@ -153,8 +157,8 @@ with open('$cellar/INSTALL_RECEIPT.json', 'w') as f:
 # brew bottle 的 key 用版本名 (sequoia, sonoma...)，不是 darwin 数字
 __brew_fallback_darwin_to_macos() {
   case "$1" in
-    26) echo "sequoia" ;;
-    25) echo "sequoia" ;;
+    26) echo "tahoe" ;;
+    25) echo "tahoe" ;;
     24) echo "sequoia" ;;
     23) echo "sonoma" ;;
     22) echo "ventura" ;;
