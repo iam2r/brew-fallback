@@ -27,6 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Debug — dump brew bottle files
+        run: |
+          brew info autoconf --json=v2 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['formulae'][0]
+f = d.get('bottle',{}).get('files',{})
+print('=== bottle files keys ===')
+print(list(f.keys()))
+import os
+print('arch:', os.uname().machine)
+print('darwin:', __import__('platform').release())
+" 2>&1 || echo "could not dump"
+
       - name: Install brew-fallback
         run: |
           mkdir -p ~/.local/share/brew-fallback
