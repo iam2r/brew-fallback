@@ -98,6 +98,14 @@ __brew_fallback_install() {
   local dver="$4" arch="$5"
   local mirror="https://mirror.fcix.net/macports/packages/$mp_name/"
 
+  # 测试/模拟：BREW_FALLBACK_MOCK_SOURCE 设置后，跳过 MacPorts 下载，
+  # 直接返回 1 让调用方回退到源码编译。
+  # BREW_FALLBACK_MOCK_MIRROR 设置后，用自定义 URL 代替 MacPorts 镜像。
+  if [[ -n "$BREW_FALLBACK_MOCK_SOURCE" ]]; then return 1; fi
+  if [[ -n "$BREW_FALLBACK_MOCK_MIRROR" ]]; then
+    mirror="$BREW_FALLBACK_MOCK_MIRROR/"
+  fi
+
   if [[ -z "$ver" ]]; then
     # Use sed with basic ERE (compatible with BSD/macOS sed) instead of
     # GNU-only grep -oP to parse version from MacPorts directory listing.
@@ -180,18 +188,20 @@ brew() {
     [[ "$osname" == "unknown" ]] && { command brew "$@"; return $?; }
     local arch="$(uname -m)"
 
-    # brew v4 bottle JSON 结构: bottle.stable.files.<key>
-    # Key 格式: "arm64_sequoia" (ARM) 或 "sequoia" (Intel)
-    local want_key="${osname}"
-    [[ "$arch" == "arm64" ]] && want_key="arm64_${osname}"
+    # 测试/模拟：BREW_FALLBACK_MOCK_NO_BOTTLE 设置后，强制所有包走 fallback 路径，
+    # 绕过 bottle 检测（模拟老旧 macOS 场景）。
+    if [[ -z "$BREW_FALLBACK_MOCK_NO_BOTTLE" ]]; then
+      local want_key="${osname}"
+      [[ "$arch" == "arm64" ]] && want_key="arm64_${osname}"
 
-    local has=$(command brew info --json=v2 "${@:2}" 2>/dev/null | command python3 -c \
-      "import json,sys
+      local has=$(command brew info --json=v2 "${@:2}" 2>/dev/null | command python3 -c \
+        "import json,sys
 try:
     d=json.load(sys.stdin)['formulae'][0]
     f=d.get('bottle',{}).get('stable',{}).get('files',{})
     print('yes' if '$want_key' in f else '')
 except: print('')" 2>/dev/null)
+    fi
 
     [[ -n "$has" ]] && { command brew "$@"; return $?; }
 

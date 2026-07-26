@@ -47,9 +47,17 @@ jobs:
       - name: Test — bottle fallback (fd)
         run: |
           source ~/.local/share/brew-fallback/brew-fallback.sh
-          # unbottle if already present
           brew uninstall --ignore-dependencies fd 2>/dev/null || true
           brew install fd 2>&1
+          fd --version
+          brew list | grep fd
+
+      - name: Test — force fallback (BREW_FALLBACK_MOCK_NO_BOTTLE)
+        run: |
+          source ~/.local/share/brew-fallback/brew-fallback.sh
+          # Force all packages through fallback, simulating old macOS without bottles
+          brew uninstall --ignore-dependencies fd 2>/dev/null || true
+          BREW_FALLBACK_MOCK_NO_BOTTLE=1 brew install fd 2>&1
           fd --version
           brew list | grep fd
 
