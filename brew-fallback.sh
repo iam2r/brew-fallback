@@ -14,57 +14,74 @@ __brew_fallback_darwin_ver() {
   uname -r | cut -d. -f1
 }
 
-# === 在 MacPorts 镜像上搜索包名 ===
-# 不枚举映射，动态搜索镜像目录，匹配最接近的包名
-__brew_fallback_mp_find() {
+# === brew 包名 → MacPorts 包名映射表 ===
+# 同名的大多数不需要写，这里只列出不同的。
+# 格式: "brew 包名" "MacPorts 包名"
+# 修改此表不需要动核心代码。
+__brew_fallback_pkgmap() {
   local name="$1"
-
-  # 尝试 1: 原名
-  local code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-    "https://mirror.fcix.net/macports/packages/$name/" 2>/dev/null)
-  [[ "$code" = "200" ]] && { echo "$name"; return 0; }
-
-  # 尝试 2: 去掉 @version — python@3.12 → python312（去点号）
-  if [[ "$name" == *@* ]]; then
-    local bare="${name%%@*}"
-    local ver="${name#*@}"
-    local try="${bare}$(echo "$ver" | tr -d '.')"   # 3.12 → 312
-    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-      "https://mirror.fcix.net/macports/packages/$try/" 2>/dev/null)
-    [[ "$code" = "200" ]] && { echo "$try"; return 0; }
-    # 再试裸名（openssl@3 → openssl 而非 openssl3）
-    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-      "https://mirror.fcix.net/macports/packages/$bare/" 2>/dev/null)
-    [[ "$code" = "200" ]] && { echo "$bare"; return 0; }
-  fi
-
-  # 尝试 3: node@X → nodejsX
-  if [[ "$name" == node@* ]]; then
-    local try="nodejs${name#*@}"
-    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-      "https://mirror.fcix.net/macports/packages/$try/" 2>/dev/null)
-    [[ "$code" = "200" ]] && { echo "$try"; return 0; }
-  fi
-
-  # 尝试 4: gnu-XXX → gXXX（gnu-sed → gsed）
-  if [[ "$name" == gnu-* ]]; then
-    local try="g${name#gnu-}"
-    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-      "https://mirror.fcix.net/macports/packages/$try/" 2>/dev/null)
-    [[ "$code" = "200" ]] && { echo "$try"; return 0; }
-  fi
-
-  # 尝试 5: sqlite → sqlite3
-  if [[ "$name" == sqlite ]]; then
-    code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
-      "https://mirror.fcix.net/macports/packages/sqlite3/" 2>/dev/null)
-    [[ "$code" = "200" ]] && { echo "sqlite3"; return 0; }
-  fi
-
-  # 尝试 6: libXXX → libXXX（直接匹配）
-  # 多数 brew 的 libXXX 在 MacPorts 上同名，已经试过原名了
-
-  return 1
+  case "$name" in
+    # GNU 工具：gnu-XXX → gXXX
+    gnu-sed)     echo "gsed" ;;
+    gnu-tar)     echo "gtar" ;;
+    gnu-which)   echo "gwhich" ;;
+    gnu-indent)  echo "gindent" ;;
+    gnu-time)    echo "gtime" ;;
+    # 语言运行时：Xxx@YY → XxxYY
+    python@3.8)  echo "python38" ;;
+    python@3.9)  echo "python39" ;;
+    python@3.10) echo "python310" ;;
+    python@3.11) echo "python311" ;;
+    python@3.12) echo "python312" ;;
+    python@3.13) echo "python313" ;;
+    python)      echo "python312" ;;
+    ruby@3.3)    echo "ruby33" ;;
+    ruby@3.2)    echo "ruby32" ;;
+    perl@5.38)   echo "perl5.38" ;;
+    perl@5.36)   echo "perl5.36" ;;
+    lua@5.4)     echo "lua54" ;;
+    lua@5.3)     echo "lua53" ;;
+    node)        echo "nodejs22" ;;
+    node@22)     echo "nodejs22" ;;
+    node@20)     echo "nodejs20" ;;
+    node@18)     echo "nodejs18" ;;
+    # 编译器
+    gcc)         echo "gcc14" ;;
+    gcc@14)      echo "gcc14" ;;
+    gcc@13)      echo "gcc13" ;;
+    llvm)        echo "llvm-18" ;;
+    llvm@18)     echo "llvm-18" ;;
+    llvm@17)     echo "llvm-17" ;;
+    make)        echo "gmake" ;;
+    # 数据库
+    mysql)       echo "mariadb" ;;
+    postgresql@16) echo "postgresql16" ;;
+    postgresql@15) echo "postgresql15" ;;
+    sqlite)      echo "sqlite3" ;;
+    # 构建
+    pkg-config)  echo "pkgconfig" ;;
+    # 文本工具
+    ag)          echo "the_silver_searcher" ;;
+    silver-searcher) echo "the_silver_searcher" ;;
+    # 系统
+    icu4c)       echo "icu" ;;
+    ImageMagick) echo "ImageMagick" ;;
+    imagemagick) echo "ImageMagick" ;;
+    # 默认同名，再验证是否存在，不存在就用动态搜索 fallback
+    *)  local bare="${name%%@*}"
+        # 先验证原名
+        local code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" \
+          "https://mirror.fcix.net/macports/packages/$bare/" 2>/dev/null)
+        if [[ "$code" = "200" ]]; then
+          echo "$bare"
+        else
+          # 动态搜索：node → nodejs22
+          [[ "$bare" == node ]] && { echo "nodejs22"; return; }
+          # 剩余交给 git log
+          echo ""
+        fi
+        ;;
+  esac
 }
 
 # === 核心：从 MacPorts 镜像下载预编译包，安装到 brew Cellar ===
@@ -145,7 +162,12 @@ except: print('')" 2>/dev/null)
     local pkgs=("${@:2}")
     for pkg in "${pkgs[@]}"; do
       [[ "$pkg" == -* ]] && continue
-      local mp_name="$(__brew_fallback_mp_find "$pkg")"
+      local mp_name="$(__brew_fallback_pkgmap "$pkg")"
+      [[ -z "$mp_name" ]] && {
+        echo "  ❌ brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
+        command brew install "$pkg"
+        continue
+      }
       [[ -z "$mp_name" ]] && {
         echo "  ❌ brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
         command brew install "$pkg"
