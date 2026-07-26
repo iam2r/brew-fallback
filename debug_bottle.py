@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Debug: dump brew bottle files structure to understand detection failure."""
+"""Debug: dump full brew bottle structure to understand detection failure."""
 import json, os, platform
 
 try:
-    data = json.loads(os.popen("brew info autoconf --json=v2 2>/dev/null").read())
+    raw = os.popen("brew info autoconf --json=v2 2>/dev/null").read()
+    data = json.loads(raw)
     d = data["formulae"][0]
-    f = d.get("bottle", {}).get("files", {})
-    print("KEYS:", list(f.keys()))
+    # Dump the full bottle block
+    bottle = d.get("bottle", {})
+    print("=== full bottle block ===")
+    print(json.dumps(bottle, indent=2))
 except Exception as e:
     print(f"brew parse error: {e}")
 
