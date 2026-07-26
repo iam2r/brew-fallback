@@ -111,15 +111,12 @@ __brew_fallback_install() {
     # GNU-only grep -oP to parse version from MacPorts directory listing.
     # Matches: mp_name-1.2.3_0.darwin_XX.arch.tbz2
     ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null)
-    # Debug: if MOCK, print what MacPorts returned
-    if [[ -n "$BREW_FALLBACK_MOCK_NO_BOTTLE" ]]; then
-      echo "  [debug] MacPorts $mirror returned $(echo "$ver" | wc -l) lines" >&2
-      echo "  [debug] sample: $(echo "$ver" | head -3)" >&2
-    fi
+    [[ -n "$ver" ]] || return 1
+    # MacPorts 镜像返回 HTML 目录列表，提取 .tbz2 文件链接中的版本号
     ver=$(echo "$ver" \
-      | tr ' ' '\n' \
-      | sed -n "s/^${mp_name}-\([0-9.]*\)_0\.darwin_${dver}\.${arch}\.tbz2$/\1/p" \
-      | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+      | grep -oE "${mp_name}-[0-9][0-9._]*_0\.darwin_${dver}\.${arch}\.tbz2" \
+      | head -1 \
+      | sed "s/^${mp_name}-//; s/_0\.darwin_${dver}\.${arch}\.tbz2$//")
     [[ -z "$ver" ]] && return 1
   fi
 
