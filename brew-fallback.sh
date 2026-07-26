@@ -180,8 +180,8 @@ brew() {
     [[ "$osname" == "unknown" ]] && { command brew "$@"; return $?; }
     local arch="$(uname -m)"
 
-    # brew bottle.files key 格式: "arm64_sequoia", "sequoia", "arm64_sonoma", etc.
-    # 我们构造当前平台对应的 key 来匹配
+    # brew v4 bottle JSON 结构: bottle.stable.files.<key>
+    # Key 格式: "arm64_sequoia" (ARM) 或 "sequoia" (Intel)
     local want_key="${osname}"
     [[ "$arch" == "arm64" ]] && want_key="arm64_${osname}"
 
@@ -189,7 +189,7 @@ brew() {
       "import json,sys
 try:
     d=json.load(sys.stdin)['formulae'][0]
-    f=d.get('bottle',{}).get('files',{})
+    f=d.get('bottle',{}).get('stable',{}).get('files',{})
     print('yes' if '$want_key' in f else '')
 except: print('')" 2>/dev/null)
 
