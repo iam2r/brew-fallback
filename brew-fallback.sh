@@ -149,19 +149,44 @@ with open('$cellar/INSTALL_RECEIPT.json', 'w') as f:
   echo "🍺  /usr/local/Cellar/${brew_name}/${ver} (来自 MacPorts 镜像)" >&2
 }
 
+# === darwin 版本号 → macOS 版本名映射 ===
+# brew bottle 的 key 用版本名 (sequoia, sonoma...)，不是 darwin 数字
+__brew_fallback_darwin_to_macos() {
+  case "$1" in
+    26) echo "sequoia" ;;
+    25) echo "sequoia" ;;
+    24) echo "sequoia" ;;
+    23) echo "sonoma" ;;
+    22) echo "ventura" ;;
+    21) echo "monterey" ;;
+    20) echo "bigsur" ;;
+    19) echo "catalina" ;;
+    18) echo "mojave" ;;
+    17) echo "high_sierra" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
 # === 劫持 brew — 只拦截 install，其他透传 ===
 brew() {
   if [[ "$1" == "install" && -n "$2" ]]; then
     local dver="$(__brew_fallback_darwin_ver)"
     [[ -z "$dver" ]] && { command brew "$@"; return $?; }
+    local osname="$(__brew_fallback_darwin_to_macos "$dver")"
+    [[ "$osname" == "unknown" ]] && { command brew "$@"; return $?; }
     local arch="$(uname -m)"
+
+    # brew bottle.files key 格式: "arm64_sequoia", "sequoia", "arm64_sonoma", etc.
+    # 我们构造当前平台对应的 key 来匹配
+    local want_key="${osname}"
+    [[ "$arch" == "arm64" ]] && want_key="arm64_${osname}"
 
     local has=$(command brew info --json=v2 "${@:2}" 2>/dev/null | command python3 -c \
       "import json,sys
 try:
     d=json.load(sys.stdin)['formulae'][0]
     f=d.get('bottle',{}).get('files',{})
-    print('yes' if any('$dver' in k for k in f) or any('$arch' in k for k in f) else '')
+    print('yes' if '$want_key' in f else '')
 except: print('')" 2>/dev/null)
 
     [[ -n "$has" ]] && { command brew "$@"; return $?; }
