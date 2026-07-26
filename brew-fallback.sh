@@ -198,8 +198,12 @@ brew() {
         "import json,sys
 try:
     d=json.load(sys.stdin)['formulae'][0]
-    f=d.get('bottle',{}).get('stable',{}).get('files',{})
-    print('yes' if '$want_key' in f else '')
+    f=d.get('bottle',{})
+    # brew v4: bottle.stable.files.<key>
+    # brew v3: bottle.files.<key>
+    src=f.get('stable',f)
+    keys=list(src.get('files',{}).keys())
+    print('yes' if '$want_key' in keys else '')
 except: print('')" 2>/dev/null)
     fi
 
