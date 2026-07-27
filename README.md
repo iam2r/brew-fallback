@@ -87,6 +87,28 @@ brew uninstall <pkg>
   autoremove for orphaned deps
 - For complex packages (ffmpeg, imagemagick, etc.), the source build fallback is more reliable
 
+### User preference: fallback strategy
+
+Set `BREW_FALLBACK_PREFER` to choose the fallback order:
+
+| Value | Behavior |
+|-------|----------|
+| `archive` (default) | Try ghcr.io old bottle first → MacPorts → source build |
+| `macports` | Skip archive, use MacPorts directly (newer versions) |
+| `source` | Skip both, use brew source build |
+
+```bash
+# Use latest version from MacPorts (requires path fix via install_name_tool)
+BREW_FALLBACK_PREFER=macports brew install fd
+
+# Source build only (no fallback)
+BREW_FALLBACK_PREFER=source brew install curl
+```
+
+### Known issues
+
+- **Archive bottle version mismatch** (`fd` on ventura example): some homebrew-core commits have a Formula url version different from the bottle tarball version. brew-fallback detects this failure and automatically falls back to MacPorts. The partial install directory is cleaned up so the next attempt is clean.
+
 ### License
 
 MIT / Apache 2.0 dual-licensed
