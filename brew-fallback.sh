@@ -19,8 +19,13 @@ __brew_fallback_darwin_ver() {
 # 规则从上到下依次尝试，匹配即停。
 __brew_fallback_pkgmap() {
   local name="$1" bare ver
-  bare="${name%%@*}"
-  ver="${name#*@}"
+  if [[ "$name" == *@* ]]; then
+    bare="${name%%@*}"
+    ver="${name#*@}"
+  else
+    bare="$name"
+    ver=""
+  fi
 
   # 规则 1: 精确匹配特例
   case "$name" in
@@ -48,7 +53,7 @@ __brew_fallback_pkgmap() {
     ruby)              echo "ruby33"; return ;;
     perl)              echo "perl5.38"; return ;;
     pip)               echo "py-pip"; return ;;
-    git)               echo "git" ;;
+    git)               echo "git"; return ;;
     # 无映射的 → 规则继续
   esac
 
@@ -69,12 +74,16 @@ __brew_fallback_pkgmap() {
   # 规则 4: openssl@X → openssl（MacPorts 上叫 openssl，不带版本）
   if [[ "$bare" == openssl ]]; then echo "openssl"; return; fi
 
-  # 规则 5: node@YY → nodejsYY, node → nodejs(当前大版本)
+  # 规则 5: node@YY → nodejsYY, node → nodejs(根据 darwin 版本推断)
   if [[ "$bare" == node ]]; then
-    local darwin_ver="${ver:-$(uname -r | cut -d. -f1)}"
-    if   (( darwin_ver >= 25 )); then echo "nodejs24"
-    elif (( darwin_ver >= 22 )); then echo "nodejs22"
-    else echo "nodejs20"; fi
+    if [[ -n "$ver" ]]; then
+      echo "nodejs${ver}"
+    else
+      local dver_node="$(uname -r | cut -d. -f1)"
+      if   (( dver_node >= 25 )); then echo "nodejs24"
+      elif (( dver_node >= 22 )); then echo "nodejs22"
+      else echo "nodejs20"; fi
+    fi
     return
   fi
 
@@ -214,11 +223,6 @@ except: print('')" 2>/dev/null)
     for pkg in "${pkgs[@]}"; do
       [[ "$pkg" == -* ]] && continue
       local mp_name="$(__brew_fallback_pkgmap "$pkg")"
-      [[ -z "$mp_name" ]] && {
-        echo "  ❌ brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
-        command brew install "$pkg"
-        continue
-      }
       [[ -z "$mp_name" ]] && {
         echo "  ❌ brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
         command brew install "$pkg"
