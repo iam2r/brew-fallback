@@ -82,7 +82,9 @@ brew uninstall <pkg>
 
 - The MacPorts version may differ from the latest Homebrew formula version
 - Only packages that exist on both Homebrew and MacPorts are supported
-- Runtime dependencies (libraries) are NOT installed — this only works for statically linked or self-contained binaries
+- Runtime dependencies (linked .dylibs) are automatically downloaded from MacPorts,
+  installed to Cellar, and tracked as brew dependencies — `brew uninstall` triggers
+  autoremove for orphaned deps
 - For complex packages (ffmpeg, imagemagick, etc.), the source build fallback is more reliable
 
 ### License
