@@ -1,7 +1,8 @@
 # brew-fallback — 当 Homebrew 不再为你的 macOS 编译 bottle
 #
 # 劫持 brew install，有 bottle 就走原版，没有就从 MacPorts 镜像取预编译。
-# 装到 Cellar、写 INSTALL_RECEIPT、brew list/uninstall 全都能认。
+# 自动补齐运行时依赖库，重写链接路径，写入 INSTALL_RECEIPT 依赖树。
+# 装到 Cellar、写 INSTALL_RECEIPT、brew list/uninstall/autoremove 全都能认。
 #
 # 适用于：zsh / bash / 任何 POSIX shell
 #
@@ -101,15 +102,192 @@ __brew_fallback_pkgmap() {
   echo "$bare"
 }
 
+# === 修复 Mach-O 依赖 + 写入 INSTALL_RECEIPT.json ===
+# 扫描 /opt/local/ 引用 → 下载依赖 dylib → install_name_tool → receipt
+__brew_fallback_fix_and_receipt() {
+  local cellar_dir="$1" dver="$2" arch="$3" brew_name="$4" ver="$5"
+  local dep_base="/usr/local/lib/brew-fallback"
+  local tmpdir="/tmp/brew-fallback-receipt-${brew_name}.$$"
+  mkdir -p "$tmpdir" "$dep_base"
+
+  # 阶段 1: 找所有 Mach-O
+  find "$cellar_dir" -type f > "$tmpdir/all"
+  : > "$tmpdir/machos"
+  while IFS= read -r f; do
+    file -b "$f" 2>/dev/null | grep -q "Mach-O" && echo "$f" >> "$tmpdir/machos"
+  done < "$tmpdir/all"
+
+  # 阶段 2: 广度优先扫描 /opt/local/ 引用（最多 2 层递归）
+  local depth=0 max_depth=2
+  : > "$tmpdir/refs"
+  : > "$tmpdir/deps"
+  local scan_dirs="$cellar_dir"
+
+  while (( depth < max_depth )); do
+    local newfile="$tmpdir/new_${depth}"
+    : > "$newfile"
+    while IFS= read -r f; do
+      local match=0
+      for sd in $scan_dirs; do
+        case "$f" in "$sd"/*) match=1; break ;; esac
+      done
+      [[ $match -eq 0 ]] && continue
+      otool -L "$f" 2>/dev/null | grep "/opt/local/" \
+        | sed 's/^[[:space:]]*//; s/ (.*$//' >> "$newfile"
+    done < "$tmpdir/machos"
+
+    sort -u -o "$newfile" "$newfile"
+    # 只取新引用
+    local missing="$tmpdir/miss_${depth}"
+    : > "$missing"
+    while IFS= read -r ref; do
+      grep -qxF "$ref" "$tmpdir/refs" 2>/dev/null || echo "$ref" >> "$missing"
+    done < "$newfile"
+    [[ ! -s "$missing" ]] && break
+
+    cat "$missing" >> "$tmpdir/refs"
+    local new_dirs=""
+    while IFS= read -r ref; do
+      local lib_name="$(basename "$ref")"
+      local bare="${lib_name%.dylib}"
+      bare="${bare%.*}"
+      local pkg=""
+      case "$lib_name" in
+        libcharset.*.dylib)       pkg="libiconv";;
+        libintl.*.dylib|libtextstyle.*.dylib) pkg="gettext";;
+        libssl.*.dylib|libcrypto.*.dylib) pkg="openssl3";;
+        libncurses*.dylib|libform*.dylib|libmenu*.dylib|libpanel*.dylib) pkg="ncurses";;
+        libpcre2-*.dylib)         pkg="pcre2";;
+        libz.*.dylib)             pkg="zlib";;
+        libbz2.*.dylib)           pkg="bzip2";;
+        liblzma.*.dylib)          pkg="xz";;
+        libpng16.*.dylib|libpng.*.dylib) pkg="libpng";;
+        libsasl2.*.dylib)         pkg="cyrus-sasl2";;
+        liblber.*.dylib|libldap.*.dylib) pkg="openldap";;
+        libgpg-error.*.dylib)     pkg="libgpg-error";;
+        libgio-2.0.*.dylib|libgmodule-2.0.*.dylib|libgobject-2.0.*.dylib|libglib-2.0.*.dylib|libgthread-2.0.*.dylib) pkg="glib2";;
+        libhogweed.*.dylib|libnettle.*.dylib) pkg="nettle";;
+        libgmpxx.*.dylib)         pkg="gmp";;
+        librtmp.*.dylib)          pkg="rtmpdump";;
+        libpixman-1.*.dylib)      pkg="pixman";;
+        libltdl.*.dylib)          pkg="libtool";;
+        libfreetype.*.dylib)      pkg="freetype";;
+        libfontconfig.*.dylib)    pkg="fontconfig";;
+        libcurl.*.dylib)          pkg="curl";;
+        libarchive.*.dylib)       pkg="libarchive";;
+        libssh2.*.dylib)          pkg="libssh2";;
+        *)                        pkg="$bare";;
+      esac
+      [[ -z "$pkg" ]] && continue
+
+      local pkg_dir="${dep_base}/${pkg}"
+      if [[ ! -d "$pkg_dir" ]]; then
+        local mirror_pkg="https://mirror.fcix.net/macports/packages/${pkg}/"
+        local html_pkg
+        html_pkg=$(curl -s --max-time 10 "$mirror_pkg" 2>/dev/null) || continue
+        local dep_ver
+        dep_ver=$(echo "$html_pkg" \
+          | grep -oE "${pkg}-[0-9][0-9._]*_0\.darwin_${dver}\.${arch}\.tbz2" \
+          | head -1 \
+          | sed "s/^${pkg}-//; s/_0\.darwin_${dver}\.${arch}\.tbz2$//")
+        [[ -z "$dep_ver" ]] && continue
+        echo "  dep: ${pkg}-${dep_ver}" >&2
+        local url_pkg="${mirror_pkg}${pkg}-${dep_ver}_0.darwin_${dver}.${arch}.tbz2"
+        local cache_pkg="/tmp/brew-fallback-dep-${pkg}.tbz2"
+        curl -sL --max-time 60 -o "$cache_pkg" "$url_pkg" 2>/dev/null || continue
+        mkdir -p "$pkg_dir"
+        tar xf "$cache_pkg" -C "$pkg_dir" 2>/dev/null
+        if [[ -d "$pkg_dir/opt/local/lib" ]]; then
+          mv "$pkg_dir/opt/local/lib/"* "$pkg_dir/" 2>/dev/null
+          rm -rf "$pkg_dir/opt"
+        fi
+        rm -f "$cache_pkg"
+      else
+        local dep_ver="cached"
+      fi
+
+      # 记录依赖
+      [[ "$dep_ver" == "cached" ]] || true
+      grep -qxF "${pkg}" "$tmpdir/deps" 2>/dev/null || echo "${pkg}" >> "$tmpdir/deps"
+      [[ "$dep_ver" != "cached" ]] && new_dirs="$new_dirs $pkg_dir"
+    done < "$missing"
+    scan_dirs="$new_dirs"
+    ((depth++))
+  done
+
+  # 阶段 3: install_name_tool -change
+  local fix_count=0
+  while IFS= read -r ref; do
+    local lib_name="$(basename "$ref")"
+    local target="$dep_base/$(echo "$ref" | sed 's|/opt/local/lib/||')"
+    # 找目标文件
+    local found=""
+    for f in "$dep_base"/*/"$lib_name"; do
+      [[ -f "$f" ]] && { found="$f"; break; }
+    done
+    [[ -z "$found" ]] && continue
+    while IFS= read -r f; do
+      install_name_tool -change "$ref" "$found" "$f" 2>/dev/null && ((fix_count++))
+    done < "$tmpdir/machos"
+    install_name_tool -id "$found" "$found" 2>/dev/null
+  done < "$tmpdir/refs"
+
+  [[ $fix_count -gt 0 ]] && echo "  fix: $fix_count 个依赖路径" >&2
+
+  # 阶段 4: 写 INSTALL_RECEIPT.json
+  local deps_json="[]"
+  if [[ -s "$tmpdir/deps" ]]; then
+    deps_json="["
+    local first_dep=1
+    while IFS= read -r pkg_name; do
+      [[ $first_dep -eq 0 ]] && deps_json="${deps_json}, "
+      deps_json="${deps_json}{\"full_name\":\"${pkg_name}\",\"version\":\"\",\"revision\":0,\"pkg_version\":\"\",\"declared_directly\":false}"
+      first_dep=0
+    done < "$tmpdir/deps"
+    deps_json="${deps_json}]"
+  fi
+
+  # 用临时 python 文件写 receipt
+  local pyfile="$tmpdir/write_receipt.py"
+  cat > "$pyfile" <<PYEOF
+import json, time
+receipt = {
+    "homebrew_version": "5.0.7",
+    "used_options": [], "unused_options": [],
+    "built_as_bottle": True, "poured_from_bottle": True, "loaded_from_api": True,
+    "installed_as_dependency": False, "installed_on_request": True,
+    "time": int(time.time()),
+    "source": {"spec": "stable", "versions": {"stable": "$ver"}, "tap": "homebrew/core"},
+    "arch": "$arch",
+    "built_on": {"os": "Macintosh", "os_version": "macOS $(sw_vers -productVersion)"},
+    "compiler": "clang",
+}
+import os
+deps_path = "$tmpdir/deps"
+if os.path.getsize(deps_path) > 0:
+    deps_list = []
+    with open(deps_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                deps_list.append({"full_name": line, "version": "", "revision": 0, "pkg_version": "", "declared_directly": False})
+    receipt["runtime_dependencies"] = deps_list
+with open("${cellar_dir}/INSTALL_RECEIPT.json", "w") as f:
+    json.dump(receipt, f, indent=2)
+print("OK")
+PYEOF
+  command python3 "$pyfile" 2>/dev/null
+
+  rm -rf "$tmpdir"
+}
+
 # === 核心：从 MacPorts 镜像下载预编译包，安装到 brew Cellar ===
 __brew_fallback_install() {
   local brew_name="$1" mp_name="$2" ver="$3"
   local dver="$4" arch="$5"
   local mirror="https://mirror.fcix.net/macports/packages/$mp_name/"
 
-  # 测试/模拟：BREW_FALLBACK_MOCK_SOURCE 设置后，跳过 MacPorts 下载，
-  # 直接返回 1 让调用方回退到源码编译。
-  # BREW_FALLBACK_MOCK_MIRROR 设置后，用自定义 URL 代替 MacPorts 镜像。
+  # 测试/模拟：BREW_FALLBACK_MOCK_SOURCE 设置后，跳过 MacPorts 下载
   if [[ -n "$BREW_FALLBACK_MOCK_SOURCE" ]]; then return 1; fi
   if [[ -n "$BREW_FALLBACK_MOCK_MIRROR" ]]; then
     mirror="$BREW_FALLBACK_MOCK_MIRROR/"
@@ -118,7 +296,6 @@ __brew_fallback_install() {
   if [[ -z "$ver" ]]; then
     ver=$(curl -s --max-time 10 "$mirror" 2>/dev/null)
     [[ -n "$ver" ]] || return 1
-    # MacPorts 镜像返回 HTML 目录列表，提取 .tbz2 文件链接中的版本号
     ver=$(echo "$ver" \
       | grep -oE "${mp_name}-[0-9][0-9._]*_0\.darwin_${dver}\.${arch}\.tbz2" \
       | head -1 \
@@ -150,28 +327,14 @@ __brew_fallback_install() {
   done
   ln -sfn "$cellar" "$(brew --prefix 2>/dev/null)/opt/${brew_name}" 2>/dev/null
 
-  command python3 -c "
-import json, time
-with open('$cellar/INSTALL_RECEIPT.json', 'w') as f:
-    json.dump({
-        'homebrew_version': '5.0.7',
-        'used_options': [], 'unused_options': [],
-        'built_as_bottle': True, 'poured_from_bottle': True, 'loaded_from_api': True,
-        'installed_as_dependency': False, 'installed_on_request': True,
-        'time': int(time.time()),
-        'source': {'spec': 'stable', 'versions': {'stable': '$ver'}, 'tap': 'homebrew/core'},
-        'arch': '$arch',
-        'built_on': {'os': 'Macintosh', 'os_version': 'macOS $(sw_vers -productVersion)'},
-        'compiler': 'clang', 'runtime_dependencies': [],
-    }, f, indent=2)
-" 2>/dev/null
+  # 依赖修复 + 写入 INSTALL_RECEIPT.json
+  __brew_fallback_fix_and_receipt "$cellar" "$dver" "$arch" "$brew_name" "$ver"
 
   rm -f "$cache"
-  echo "🍺  /usr/local/Cellar/${brew_name}/${ver} (来自 MacPorts 镜像)" >&2
+  echo "  /usr/local/Cellar/${brew_name}/${ver} (来自 MacPorts 镜像)" >&2
 }
 
 # === darwin 版本号 → macOS 版本名映射 ===
-# brew bottle 的 key 用版本名 (sequoia, sonoma...)，不是 darwin 数字
 __brew_fallback_darwin_to_macos() {
   case "$1" in
     26) echo "tahoe" ;;
@@ -197,19 +360,14 @@ brew() {
     [[ "$osname" == "unknown" ]] && { command brew "$@"; return $?; }
     local arch="$(uname -m)"
 
-    # 测试/模拟：BREW_FALLBACK_MOCK_NO_BOTTLE 设置后，强制所有包走 fallback 路径，
-    # 绕过 bottle 检测（模拟老旧 macOS 场景）。
     if [[ -z "$BREW_FALLBACK_MOCK_NO_BOTTLE" ]]; then
       local want_key="${osname}"
       [[ "$arch" == "arm64" ]] && want_key="arm64_${osname}"
-
       local has=$(command brew info --json=v2 "${@:2}" 2>/dev/null | command python3 -c \
         "import json,sys
 try:
     d=json.load(sys.stdin)['formulae'][0]
     f=d.get('bottle',{})
-    # brew v4: bottle.stable.files.<key>
-    # brew v3: bottle.files.<key>
     src=f.get('stable',f)
     keys=list(src.get('files',{}).keys())
     print('yes' if '$want_key' in keys else '')
@@ -218,18 +376,18 @@ except: print('')" 2>/dev/null)
 
     [[ -n "$has" ]] && { command brew "$@"; return $?; }
 
-    echo "⚠️  brew-fallback: 此包没有 macOS $dver 的 bottle，尝试 MacPorts 镜像..." >&2
+    echo "brew-fallback: 此包没有 macOS $dver 的 bottle，尝试 MacPorts 镜像..." >&2
     local pkgs=("${@:2}")
     for pkg in "${pkgs[@]}"; do
       [[ "$pkg" == -* ]] && continue
       local mp_name="$(__brew_fallback_pkgmap "$pkg")"
       [[ -z "$mp_name" ]] && {
-        echo "  ❌ brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
+        echo "  ? brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
         command brew install "$pkg"
         continue
       }
       __brew_fallback_install "$pkg" "$mp_name" "" "$dver" "$arch" || {
-        echo "  ❌ brew-fallback: MacPorts 镜像也没有，回退到 brew 源码编译..." >&2
+        echo "  ? brew-fallback: MacPorts 镜像也没有，回退到 brew 源码编译..." >&2
         command brew install "$pkg"
       }
     done
