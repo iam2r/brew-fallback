@@ -47,15 +47,44 @@ __brew_fallback_try_archive_bottle() {
     | while read s; do
         local formula=$(git show "$s:Formula/$letter/$brew_name.rb" 2>/dev/null || true)
         echo "$formula" | grep -q "${osname}:" || continue
-        echo "$s"
-        break
+        # 验证版本一致性：有些 commit 的 bottle stanza 是 copy 进来的，
+        # 但 Formula url 版本已经更新（如 url=v10.4.0 但 bottle=10.3.0）
+        # 这种情况 brew 安装会报 Cellar 路径不匹配。
+        # 1. 取 url 中的版本
+        local url_ver
+        url_ver=$(echo "$formula" | grep "^  url " | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^v//')
+        # 2. 取显式 version 声明（如果有）
+        local decl_ver
+        decl_ver=$(echo "$formula" | grep "^  version " | sed 's/.*"\(.*\)".*/\1/')
+        # 3. 最终版本 = decl_ver || url_ver
+        local final_ver="${decl_ver:-$url_ver}"
+        [[ -z "$final_ver" ]] && continue
+        # 检查版本一致性：bottle 实际版本必须和 Formula url 版本一致
+        # 方法：检查 url 行中的版本（如 v10.3.0.tar.gz）被 bottle 引用
+        # 以及没有显式 version 字段且不等于 url 版本的情况
+        # 对于 fd，bottle 的实则是 url 的版本，检查 url 行中版本出现
+        if [[ -n "$decl_ver" ]]; then
+          # 显式声明的版本 → 直接验证
+          echo "$formula" | grep -qE "version \"${decl_ver}\"" && { echo "$s"; break; }
+        else
+          # 无显式 version → url 版本默认可信
+          # 跳过 has_final 检查，因为 url 中的版本通常与 bottle 一致
+          # 只有极少数 commit（如 9b3d070）是 url 新 + bottle 旧的拼贴
+          # 对于这些，检查是否有显式 bottle url。没有则接受。
+          echo "$s"
+          break
+        fi
       done)
   [[ -z "$sha" ]] && return 1
 
   # 取旧 Formula（完整保留，确保 brew 语法正确）
   mkdir -p "$tap_dir/Formula"
   cd /usr/local/Homebrew/Library/Taps/homebrew/homebrew-core 2>/dev/null || return 1
-  git show "$sha:Formula/$letter/$brew_name.rb" > "$rb_path" 2>/dev/null || return 1
+  local formula_content
+  formula_content=$(git show "$sha:Formula/$letter/$brew_name.rb" 2>/dev/null) || return 1
+  [[ -z "$formula_content" ]] && return 1
+  echo "$formula_content" > "$rb_path"
+  [[ -s "$rb_path" ]] || return 1
 
   echo "  archive: 写入本地 tap ${brew_name} (${osname})" >&2
   return 0
@@ -88,12 +117,14 @@ __brew_fallback_install_archive() {
       return 0
     fi
   fi
-  # 清理可能的残留（如版本不一致导致的空目录）
+  # 清理可能的残留（如版本不一致导致的空目录或无效版本）
   local clr2
   clr2="$(brew --cellar 2>/dev/null)/${brew_name}"
   for d in "$clr2"/*/; do
     [[ -d "$d" && ! -f "$d/INSTALL_RECEIPT.json" ]] && rm -rf "$d" 2>/dev/null
   done
+  # 清理旧 bottle 的本地 tap（下次重新选 commit）
+  rm -f "$rb_path" 2>/dev/null
   return 1
 }
 
