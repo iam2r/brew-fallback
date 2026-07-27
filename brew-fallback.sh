@@ -318,6 +318,43 @@ PYEOF
   rm -rf "$tmpdir"
 }
 
+# === 按 brew Formula 声明安装依赖到 Cellar ===
+# brew info --json → dependencies → pkgmap → MacPorts 逐包下载
+# 在装主包之前调用，这样依赖已经在 Cellar 里了
+__brew_fallback_install_formula_deps() {
+  local brew_name="$1" dver="$2" arch="$3"
+  local json_info
+  json_info=$(command brew info --json=v2 "$brew_name" 2>/dev/null) || return 0
+
+  # 从 brew JSON 提取运行时依赖列表（跳过 build deps）
+  local dep_list
+  dep_list=$(echo "$json_info" | command python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)['formulae'][0]
+    deps = d.get('dependencies', [])
+    print('\n'.join(deps))
+except: pass
+" 2>/dev/null)
+
+  [[ -z "$dep_list" ]] && return 0
+
+  echo "  deps: 按 brew 依赖声明安装 $(echo "$dep_list" | tr '\n' ' ')" >&2
+  local n_installed=0
+  while IFS= read -r brew_dep; do
+    [[ -z "$brew_dep" ]] && continue
+    local mp_dep
+    mp_dep=$(__brew_fallback_pkgmap "$brew_dep") || true
+    [[ -z "$mp_dep" ]] && {
+      echo "    ? ${brew_dep}: 无 MacPorts 映射，跳过" >&2
+      continue
+    }
+    __brew_fallback_install_dep "$mp_dep" "$dver" "$arch" >/dev/null 2>&1 && ((n_installed++))
+  done <<< "$dep_list"
+
+  [[ $n_installed -gt 0 ]] && echo "  deps: $n_installed 个依赖已安装" >&2
+}
+
 # === 核心：从 MacPorts 镜像下载预编译包，安装到 brew Cellar ===
 __brew_fallback_install() {
   local brew_name="$1" mp_name="$2" ver="$3"
@@ -343,6 +380,10 @@ __brew_fallback_install() {
   local url="${mirror}${mp_name}-${ver}_0.darwin_${dver}.${arch}.tbz2"
   local cache="/tmp/${brew_name}.tbz2"
 
+  # 先装 Formula 声明的依赖（对标 brew 在安装前的依赖检查）
+  __brew_fallback_install_formula_deps "$brew_name" "$dver" "$arch"
+
+  # 再装主包
   echo "==> brew-fallback: 从 MacPorts 镜像下载 ${mp_name}-${ver}" >&2
   curl -sL --max-time 60 -o "$cache" "$url" 2>/dev/null || return 1
 
