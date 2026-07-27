@@ -102,13 +102,83 @@ __brew_fallback_pkgmap() {
   echo "$bare"
 }
 
-# === 修复 Mach-O 依赖 + 写入 INSTALL_RECEIPT.json ===
-# 扫描 /opt/local/ 引用 → 下载依赖 dylib → install_name_tool → receipt
+# === 下载并安装依赖包到 Cellar（按 brew 规范） ===
+# 从 MacPorts 镜像取 .tbz2 → 解压到 Cellar/<pkg>/<ver>/lib/
+# → symlink /usr/local/lib/libxxx.dylib → ../Cellar/<pkg>/<ver>/lib/libxxx.dylib
+# → 写 INSTALL_RECEIPT.json (installed_as_dependency: true)
+__brew_fallback_install_dep() {
+  local pkg="$1" dver="$2" arch="$3"
+  local cellar
+  cellar="$(brew --cellar 2>/dev/null)/${pkg}" || cellar="/usr/local/Cellar/${pkg}"
+
+  # 检查是否已安装
+  if ls -d "$cellar"/*/lib/*.dylib 2>/dev/null >/dev/null; then
+    echo "cached"
+    return 0
+  fi
+
+  local mirror="https://mirror.fcix.net/macports/packages/${pkg}/"
+  local html
+  html=$(curl -s --max-time 10 "$mirror" 2>/dev/null) || return 1
+  local dep_ver
+  dep_ver=$(echo "$html" \
+    | grep -oE "${pkg}-[0-9][0-9._]*_0\.darwin_${dver}\.${arch}\.tbz2" \
+    | head -1 \
+    | sed "s/^${pkg}-//; s/_0\.darwin_${dver}\.${arch}\.tbz2$//")
+  [[ -z "$dep_ver" ]] && return 1
+
+  echo "  dep: ${pkg}-${dep_ver}" >&2
+
+  local url="${mirror}${pkg}-${dep_ver}_0.darwin_${dver}.${arch}.tbz2"
+  local cache="/tmp/brew-fallback-dep-${pkg}.tbz2"
+  curl -sL --max-time 60 -o "$cache" "$url" 2>/dev/null || return 1
+
+  local dep_cellar="${cellar}/${dep_ver}"
+  rm -rf "$dep_cellar"
+  mkdir -p "$dep_cellar"
+
+  tar xf "$cache" -C "$dep_cellar" 2>/dev/null
+  if [[ -d "$dep_cellar/opt/local" ]]; then
+    for d in bin lib share etc; do
+      [[ -d "$dep_cellar/opt/local/$d" ]] && cp -a "$dep_cellar/opt/local/$d" "$dep_cellar/" 2>/dev/null
+    done
+    rm -rf "$dep_cellar/opt"
+  fi
+  rm -f "$cache"
+
+  # symlink /usr/local/lib/libxxx.dylib → ../Cellar/<pkg>/<ver>/lib/libxxx.dylib
+  for dy in "$dep_cellar/lib/"*.dylib; do
+    [[ -f "$dy" ]] || continue
+    local libname="$(basename "$dy")"
+    ln -sf "../Cellar/${pkg}/${dep_ver}/lib/${libname}" "/usr/local/lib/${libname}" 2>/dev/null
+  done
+
+  # 写 INSTALL_RECEIPT.json
+  command python3 -c "
+import json, time
+with open('${dep_cellar}/INSTALL_RECEIPT.json', 'w') as f:
+    json.dump({
+        'homebrew_version': '5.0.7',
+        'used_options': [], 'unused_options': [],
+        'built_as_bottle': True, 'poured_from_bottle': True, 'loaded_from_api': True,
+        'installed_as_dependency': True, 'installed_on_request': False,
+        'time': int(time.time()),
+        'source': {'spec': 'stable', 'versions': {'stable': '${dep_ver}'}, 'tap': 'homebrew/core'},
+        'arch': '${arch}',
+        'built_on': {'os': 'Macintosh', 'os_version': 'macOS $(sw_vers -productVersion)'},
+        'compiler': 'clang', 'runtime_dependencies': [],
+    }, f, indent=2)
+" 2>/dev/null
+
+  echo "$dep_ver"
+}
+
+# === 修复 Mach-O 依赖 + 写入主包 INSTALL_RECEIPT.json ===
+# 扫描 /opt/local/ 引用 → 下载依赖到 Cellar → install_name_tool → receipt
 __brew_fallback_fix_and_receipt() {
   local cellar_dir="$1" dver="$2" arch="$3" brew_name="$4" ver="$5"
-  local dep_base="/usr/local/lib/brew-fallback"
   local tmpdir="/tmp/brew-fallback-receipt-${brew_name}.$$"
-  mkdir -p "$tmpdir" "$dep_base"
+  mkdir -p "$tmpdir"
 
   # 阶段 1: 找所有 Mach-O
   find "$cellar_dir" -type f > "$tmpdir/all"
@@ -180,102 +250,69 @@ __brew_fallback_fix_and_receipt() {
       esac
       [[ -z "$pkg" ]] && continue
 
-      local pkg_dir="${dep_base}/${pkg}"
-      if [[ ! -d "$pkg_dir" ]]; then
-        local mirror_pkg="https://mirror.fcix.net/macports/packages/${pkg}/"
-        local html_pkg
-        html_pkg=$(curl -s --max-time 10 "$mirror_pkg" 2>/dev/null) || continue
-        local dep_ver
-        dep_ver=$(echo "$html_pkg" \
-          | grep -oE "${pkg}-[0-9][0-9._]*_0\.darwin_${dver}\.${arch}\.tbz2" \
-          | head -1 \
-          | sed "s/^${pkg}-//; s/_0\.darwin_${dver}\.${arch}\.tbz2$//")
-        [[ -z "$dep_ver" ]] && continue
-        echo "  dep: ${pkg}-${dep_ver}" >&2
-        local url_pkg="${mirror_pkg}${pkg}-${dep_ver}_0.darwin_${dver}.${arch}.tbz2"
-        local cache_pkg="/tmp/brew-fallback-dep-${pkg}.tbz2"
-        curl -sL --max-time 60 -o "$cache_pkg" "$url_pkg" 2>/dev/null || continue
-        mkdir -p "$pkg_dir"
-        tar xf "$cache_pkg" -C "$pkg_dir" 2>/dev/null
-        if [[ -d "$pkg_dir/opt/local/lib" ]]; then
-          mv "$pkg_dir/opt/local/lib/"* "$pkg_dir/" 2>/dev/null
-          rm -rf "$pkg_dir/opt"
-        fi
-        rm -f "$cache_pkg"
-      else
-        local dep_ver="cached"
+      # 下载/安装依赖包到 Cellar
+      local dep_ver
+      dep_ver=$(__brew_fallback_install_dep "$pkg" "$dver" "$arch") && [[ -n "$dep_ver" ]] || continue
+
+      # 新安装的包需要扫描其库文件的子依赖
+      if [[ "$dep_ver" != "cached" ]]; then
+        local d_cellar
+        d_cellar="$(brew --cellar 2>/dev/null)/${pkg}/${dep_ver}" || d_cellar="/usr/local/Cellar/${pkg}/${dep_ver}"
+        new_dirs="$new_dirs $d_cellar"
       fi
 
-      # 记录依赖
-      [[ "$dep_ver" == "cached" ]] || true
+      # 记录依赖（去重）
       grep -qxF "${pkg}" "$tmpdir/deps" 2>/dev/null || echo "${pkg}" >> "$tmpdir/deps"
-      [[ "$dep_ver" != "cached" ]] && new_dirs="$new_dirs $pkg_dir"
     done < "$missing"
     scan_dirs="$new_dirs"
     ((depth++))
   done
 
-  # 阶段 3: install_name_tool -change
+  # 阶段 3: install_name_tool -change /opt/local/... → /usr/local/lib/...
   local fix_count=0
   while IFS= read -r ref; do
     local lib_name="$(basename "$ref")"
-    local target="$dep_base/$(echo "$ref" | sed 's|/opt/local/lib/||')"
-    # 找目标文件
-    local found=""
-    for f in "$dep_base"/*/"$lib_name"; do
-      [[ -f "$f" ]] && { found="$f"; break; }
-    done
-    [[ -z "$found" ]] && continue
+    local target="/usr/local/lib/${lib_name}"
+    [[ ! -f "$target" ]] && continue
     while IFS= read -r f; do
-      install_name_tool -change "$ref" "$found" "$f" 2>/dev/null && ((fix_count++))
+      install_name_tool -change "$ref" "$target" "$f" 2>/dev/null && ((fix_count++))
     done < "$tmpdir/machos"
-    install_name_tool -id "$found" "$found" 2>/dev/null
   done < "$tmpdir/refs"
 
   [[ $fix_count -gt 0 ]] && echo "  fix: $fix_count 个依赖路径" >&2
 
-  # 阶段 4: 写 INSTALL_RECEIPT.json
-  local deps_json="[]"
-  if [[ -s "$tmpdir/deps" ]]; then
-    deps_json="["
-    local first_dep=1
-    while IFS= read -r pkg_name; do
-      [[ $first_dep -eq 0 ]] && deps_json="${deps_json}, "
-      deps_json="${deps_json}{\"full_name\":\"${pkg_name}\",\"version\":\"\",\"revision\":0,\"pkg_version\":\"\",\"declared_directly\":false}"
-      first_dep=0
-    done < "$tmpdir/deps"
-    deps_json="${deps_json}]"
-  fi
-
-  # 用临时 python 文件写 receipt
+  # 阶段 4: 写主包的 INSTALL_RECEIPT.json（含 runtime_dependencies）
   local pyfile="$tmpdir/write_receipt.py"
-  cat > "$pyfile" <<PYEOF
+  cat > "$pyfile" <<'PYEOF'
 import json, time
+import os
 receipt = {
     "homebrew_version": "5.0.7",
     "used_options": [], "unused_options": [],
     "built_as_bottle": True, "poured_from_bottle": True, "loaded_from_api": True,
     "installed_as_dependency": False, "installed_on_request": True,
     "time": int(time.time()),
-    "source": {"spec": "stable", "versions": {"stable": "$ver"}, "tap": "homebrew/core"},
-    "arch": "$arch",
-    "built_on": {"os": "Macintosh", "os_version": "macOS $(sw_vers -productVersion)"},
+    "source": {"spec": "stable", "versions": {"stable": "VER"}, "tap": "homebrew/core"},
+    "arch": "ARCH",
+    "built_on": {"os": "Macintosh", "os_version": "macOS 13.7.8"},
     "compiler": "clang",
 }
-import os
-deps_path = "$tmpdir/deps"
-if os.path.getsize(deps_path) > 0:
+deps_file = "DEPS_PATH"
+if os.path.getsize(deps_file) > 0:
     deps_list = []
-    with open(deps_path) as f:
+    with open(deps_file) as f:
         for line in f:
             line = line.strip()
             if line:
                 deps_list.append({"full_name": line, "version": "", "revision": 0, "pkg_version": "", "declared_directly": False})
     receipt["runtime_dependencies"] = deps_list
-with open("${cellar_dir}/INSTALL_RECEIPT.json", "w") as f:
+with open("RECEIPT_PATH", "w") as f:
     json.dump(receipt, f, indent=2)
-print("OK")
 PYEOF
+
+  # 替换占位符
+  sed -i '' "s/VER/$ver/g; s/ARCH/$arch/g; s|DEPS_PATH|$tmpdir/deps|g; s|RECEIPT_PATH|${cellar_dir}/INSTALL_RECEIPT.json|g" "$pyfile"
+  sed -i '' "s/macOS 13.7.8/macOS $(sw_vers -productVersion)/g" "$pyfile"
   command python3 "$pyfile" 2>/dev/null
 
   rm -rf "$tmpdir"
