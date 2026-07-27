@@ -294,7 +294,7 @@ receipt = {
     "time": int(time.time()),
     "source": {"spec": "stable", "versions": {"stable": "VER"}, "tap": "homebrew/core"},
     "arch": "ARCH",
-    "built_on": {"os": "Macintosh", "os_version": "macOS 13.7.8"},
+    "built_on": {"os": "Macintosh", "os_version": "OS_VER"},
     "compiler": "clang",
 }
 deps_file = "DEPS_PATH"
@@ -311,8 +311,8 @@ with open("RECEIPT_PATH", "w") as f:
 PYEOF
 
   # 替换占位符
-  sed -i '' "s/VER/$ver/g; s/ARCH/$arch/g; s|DEPS_PATH|$tmpdir/deps|g; s|RECEIPT_PATH|${cellar_dir}/INSTALL_RECEIPT.json|g" "$pyfile"
-  sed -i '' "s/macOS 13.7.8/macOS $(sw_vers -productVersion)/g" "$pyfile"
+  local os_ver="macOS $(sw_vers -productVersion)"
+  sed -i '' "s|OS_VER|$os_ver|g; s/VER/$ver/g; s/ARCH/$arch/g; s|DEPS_PATH|$tmpdir/deps|g; s|RECEIPT_PATH|${cellar_dir}/INSTALL_RECEIPT.json|g" "$pyfile"
   command python3 "$pyfile" 2>/dev/null
 
   rm -rf "$tmpdir"
