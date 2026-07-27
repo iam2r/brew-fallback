@@ -15,6 +15,89 @@ __brew_fallback_darwin_ver() {
   uname -r | cut -d. -f1
 }
 
+# === 本地 tap 目录（存放旧版 Formula） ===
+__brew_fallback_tap_dir() {
+  echo "$(brew --repo 2>/dev/null)/Library/Taps/homebrew/homebrew-brew-fallback"
+}
+
+# === 尝试从 brew CDN (ghcr.io) 下载存档 bottle ===
+# 通过 homebrew-core git 历史找旧版 Formula，写进本地 tap，让 brew 原生处理
+# 返回 0 表示成功，1 表示不可用
+__brew_fallback_try_archive_bottle() {
+  local brew_name="$1" osname="$2" arch="$3" dver="$4"
+  local tap_dir=$(__brew_fallback_tap_dir)
+  local letter="${brew_name:0:1}"
+  local rb_path="$tap_dir/Formula/$brew_name.rb"
+
+  # 如果 tap 中已有 Formula 且版本 > 0，跳过
+  local formula_ver
+  if [[ -f "$rb_path" ]]; then
+    formula_ver=$(grep "^  version " "$rb_path" | sed 's/.*"\(.*\)".*/\1/' 2>/dev/null)
+    [[ -n "$formula_ver" ]] && return 0  # 已有 Formula，可被安装
+  fi
+
+  # 从 homebrew-core git 历史找最后一个含 osname bottle 的 Formula
+  local rb_src="/usr/local/Homebrew/Library/Taps/homebrew/homebrew-core/Formula/$letter/$brew_name.rb"
+  [[ ! -f "$rb_src" ]] && return 1
+
+  local sha
+  sha=$(cd /usr/local/Homebrew/Library/Taps/homebrew/homebrew-core 2>/dev/null \
+    && git log --all --oneline --diff-filter=M -- "Formula/$letter/$brew_name.rb" 2>/dev/null \
+    | awk '{print $1}' \
+    | while read s; do
+        local formula=$(git show "$s:Formula/$letter/$brew_name.rb" 2>/dev/null || true)
+        echo "$formula" | grep -q "${osname}:" || continue
+        echo "$s"
+        break
+      done)
+  [[ -z "$sha" ]] && return 1
+
+  # 取旧 Formula（完整保留，确保 brew 语法正确）
+  mkdir -p "$tap_dir/Formula"
+  cd /usr/local/Homebrew/Library/Taps/homebrew/homebrew-core 2>/dev/null || return 1
+  git show "$sha:Formula/$letter/$brew_name.rb" > "$rb_path" 2>/dev/null || return 1
+
+  echo "  archive: 写入本地 tap ${brew_name} (${osname})" >&2
+  return 0
+}
+
+# === 从本地 tap 安装存档 bottle（brew 原生处理） ===
+__brew_fallback_install_archive() {
+  local brew_name="$1" osname="$2" arch="$3" dver="$4"
+  local tap_dir=$(__brew_fallback_tap_dir)
+  local rb_path="$tap_dir/Formula/$brew_name.rb"
+
+  # 先确保 Formula 在 tap 中
+  __brew_fallback_try_archive_bottle "$brew_name" "$osname" "$arch" "$dver" || return 1
+
+  # 检查本地 tap 是否已 tap
+  if [[ ! -d "$tap_dir/.git" ]]; then
+    cd "$tap_dir" 2>/dev/null && git init && git add -A && git commit -m "init" --allow-empty 2>/dev/null
+    # brew 需要 tap 的 first commit
+    command brew tap homebrew/brew-fallback 2>/dev/null || true
+  fi
+
+  echo "  archive: 从 ghcr.io 下载 ${brew_name} 旧版 bottle (${osname})" >&2
+  BREW_FALLBACK_INSTALLING_ARCHIVE_PKG="$brew_name" command brew install "homebrew/brew-fallback/${brew_name}" 2>&1
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    local clr
+    clr="$(brew --cellar 2>/dev/null)/${brew_name}"
+    if ls -d "$clr"/*/INSTALL_RECEIPT.json 2>/dev/null >/dev/null; then
+      echo "  archive: 成功" >&2
+      return 0
+    fi
+  fi
+  # 清理可能的残留（如版本不一致导致的空目录）
+  local clr2
+  clr2="$(brew --cellar 2>/dev/null)/${brew_name}"
+  for d in "$clr2"/*/; do
+    [[ -d "$d" && ! -f "$d/INSTALL_RECEIPT.json" ]] && rm -rf "$d" 2>/dev/null
+  done
+  return 1
+}
+
+
 # === brew 包名 → MacPorts 包名映射表 ===
 # 同名的大多数不需要写，这里只列出不匹配规则的特例。
 # 规则从上到下依次尝试，匹配即停。
@@ -430,6 +513,12 @@ __brew_fallback_darwin_to_macos() {
 }
 
 # === 劫持 brew — 只拦截 install，其他透传 ===
+# 支持用户选择 fallback 策略：
+#   BREW_FALLBACK_PREFER=archive   → 优先存档 bottle（默认）
+#   BREW_FALLBACK_PREFER=macports  → 优先 MacPorts（最新版本）
+#   BREW_FALLBACK_PREFER=source    → 直接源码编译（brew 原生行为）
+#
+# 当 archive 优先时，如果存档 bottle 不存在或下载失败，自动回退到 MacPorts。
 brew() {
   if [[ "$1" == "install" && -n "$2" ]]; then
     local dver="$(__brew_fallback_darwin_ver)"
@@ -454,10 +543,29 @@ except: print('')" 2>/dev/null)
 
     [[ -n "$has" ]] && { command brew "$@"; return $?; }
 
-    echo "brew-fallback: 此包没有 macOS $dver 的 bottle，尝试 MacPorts 镜像..." >&2
+    # 防止递归：__brew_fallback_install_archive 内部调 brew install 时跳过回退逻辑
+    if [[ -n "$BREW_FALLBACK_INSTALLING_ARCHIVE_PKG" ]]; then
+      command brew "$@"
+      local rc=$?
+      unset BREW_FALLBACK_INSTALLING_ARCHIVE_PKG
+      return $rc
+    fi
+
+    local prefer="${BREW_FALLBACK_PREFER:-archive}"
+    echo "brew-fallback: 此包没有 macOS $dver 的 bottle，尝试回退（策略: $prefer）..." >&2
     local pkgs=("${@:2}")
     for pkg in "${pkgs[@]}"; do
       [[ "$pkg" == -* ]] && continue
+
+      if [[ "$prefer" == "macports" || "$prefer" == "source" ]]; then
+        # MacPorts 优先（或仅源码）
+        :
+      else
+        # archive 优先
+        __brew_fallback_install_archive "$pkg" "$osname" "$arch" "$dver" && continue
+      fi
+
+      # MacPorts 镜像
       local mp_name="$(__brew_fallback_pkgmap "$pkg")"
       [[ -z "$mp_name" ]] && {
         echo "  ? brew-fallback: MacPorts 镜像上找不到匹配的包名，回退到 brew 源码编译..." >&2
